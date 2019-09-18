@@ -10,7 +10,7 @@ const DEBUG = false
 macro logger(call)
     @when :($f($ana, $(args...))) = call begin
         :($f($ana, $(args...)) = begin
-            println($(QuoteNode(f)),'(', $string($objectid($ana), base=62), ",", $(args...), ')')
+            println($(QuoteNode(f)),'(', $string($objectid($ana), base = 62), ",", $(args...), ')')
             $NameResolution.$f($ana, $(args...))
         end)
     end
@@ -125,10 +125,10 @@ end
 
 function with_fname(cont, ex)
     @match ex begin
-        Expr(:call, f, args...)  => Expr(:call, cont(f), args...)
+        Expr(:call, f, args...) => Expr(:call, cont(f), args...)
         :($a where {$(args...)}) => :($(with_fname(cont, a)) where {$(args...)})
         :($a :: $t)              => :($(with_fname(cont, a)) :: $t)
-        a                        => a
+        a => a
     end
 end
 
@@ -165,11 +165,11 @@ Base.@pure Base.:+(flag :: CtxFlag, desc :: Symbol) =
     @when CtxFlag(default_scope=default_scope, is_lhs=is_lhs) = flag begin
         @match desc begin
             :lexical => CtxFlag(Lexical(), is_lhs)
-            :global  => CtxFlag(Global(), is_lhs)
-            :local   => CtxFlag(Local(), is_lhs)
-            :arg     => CtxFlag(Arg(), is_lhs)
-            :lhs     => CtxFlag(default_scope, true)
-            :rhs     => CtxFlag(default_scope, false)
+            :global => CtxFlag(Global(), is_lhs)
+            :local => CtxFlag(Local(), is_lhs)
+            :arg => CtxFlag(Arg(), is_lhs)
+            :lhs => CtxFlag(default_scope, true)
+            :rhs => CtxFlag(default_scope, false)
         end
     @otherwise
         error("impossible")
@@ -223,15 +223,15 @@ function solve(ana, ex, ctx_flag::CtxFlag = CtxFlag())
         Expr(hd && if hd in (:for, :while) end, a, b) =>
             begin ctx_flag = CtxFlag()
                 ana = child_analyzer!(ana, false)
-                a   = solve(ana, a, ctx_flag + :lhs + :local)
-                b   = solve(ana, b, ctx_flag)
+                a = solve(ana, a, ctx_flag + :lhs + :local)
+                b = solve(ana, b, ctx_flag)
                 Expr(hd, a, b)
             end
         Expr(:try, attempt, a, blocks...) =>
             @quick_lambda begin ctx_flag = CtxFlag()
                 attempt = solve(child_analyzer!(ana, false), attempt, ctx_flag)
-                a       = solve(child_analyzer!(ana, false), a, ctx_flag + :lhs) # catch exc
-                blocks  = map(solve(child_analyzer!(ana, false), _, ctx_flag), blocks)
+                a = solve(child_analyzer!(ana, false), a, ctx_flag + :lhs) # catch exc
+                blocks = map(solve(child_analyzer!(ana, false), _, ctx_flag), blocks)
                 Expr(:try, attempt, a, blocks...)
             end
         Expr(:let, Expr(:block, binds...) || bind && Do(binds = [bind]), a) =>
@@ -318,13 +318,26 @@ function solve(ana, ex, ctx_flag::CtxFlag = CtxFlag())
                 Expr(:tuple, args...)
             end
 # keyword arguments for tuples or calls
-        Expr(:kw, k::Symbol, v) => Expr(:kw, k, solve(ana, v, ctx_flag + :rhs))
+        Expr(:kw, k::Symbol, v) =>
+            begin
+                if ctx_flag.default_scope == Arg()
+                    solve(ana, k, ctx_flag)
+                end
+                Expr(:kw, k, solve(ana, v, ctx_flag + :rhs))
+            end
 # broadcasting symbols
         Expr(:call, f :: Symbol, args...) &&
             if length(args) in (1, 2) && is_broadcast_sym(f)
             end =>
             @quick_lambda let args = map(solve(ana, _, ctx_flag), args)
                 Expr(:call, f, args...)
+            end
+# addition assignment, https://github.com/thautwarm/JuliaVariables.jl/issues/6
+        Expr(hd && if hd in (:(+=), :(*=), ) end, var, rhs...) =>
+            @quick_lambda begin
+                var = solve(ana, var, ctx_flag + :lhs)
+                rhs = map(solve(ana, _, ctx_flag), rhs)
+                Expr(hd, var, rhs...)
             end
         Expr(hd, args...) =>
             @quick_lambda begin
