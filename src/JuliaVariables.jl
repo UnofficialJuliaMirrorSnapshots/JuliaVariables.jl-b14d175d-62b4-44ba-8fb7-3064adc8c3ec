@@ -57,6 +57,7 @@ function var_repr(var :: LocalVar)
     end
     r * string(var.sym)
 end
+
 function var_repr(var :: GlobalVar)
     "global $var"
 end
@@ -64,10 +65,6 @@ end
 function Base.show(io::IO, scopedvar::ScopedVar)
     scope = scopedvar.scope
     sym = scopedvar.sym
-    if isempty(scope.bounds) && isempty(scope.freevars)
-        Base.print(io, sym)
-        return
-    end
     var = var_repr(scope[sym])
     Base.print(io, "@", var)
 end
@@ -103,6 +100,27 @@ rmlines(ex::ScopedGenerator) = begin
 end
 
 rmlines(a) = a
+
+function no_ana(ex)
+    @match ex begin
+        # inline
+        Expr(:meta, _...)          ||
+        # @label, @goto
+        Expr(:symboliclabel, _...) ||
+        Expr(:symbolicgoto, _...)  ||
+        # @inbounds
+        Expr(:inbounds, _...)      ||
+        # @generated
+        Expr(:generated, _...)     ||
+        # @boundscheck
+        Expr(:boundscheck, _...)   ||
+        # @isdefined
+        Expr(:isdefined, _...)     ||
+        # @locals
+        Expr(:locals) => true
+        _ => false
+    end
+end
 
 function quick_lambda(ex)
     @when Expr(:call, args...) && if any(==(:_), args) end = ex begin
@@ -189,14 +207,11 @@ function solve(ana, sym :: Symbol, ctx_flag::CtxFlag)
     else
         require!(ana, sym)
     end
-    if Arg() == default_scope
-        sym
-    else
-        ScopedVar(ana.solved, sym)
-    end
+    ScopedVar(ana.solved, sym)
 end
 
-function solve(ana, ex, ctx_flag::CtxFlag = CtxFlag())
+function solve(ana, ex::Expr, ctx_flag::CtxFlag)
+    no_ana(ex) && return ex
     @match ex begin
 # give up analysing macrocall expressions.
         Expr(:macrocall, _...) => ex
@@ -211,11 +226,12 @@ function solve(ana, ex, ctx_flag::CtxFlag = CtxFlag())
                 end
                 is_fn = is_fn || hd !== :(=)
                 ana = if is_fn
+                    ctx_flag = ctx_flag + :arg
                     child_analyzer!(ana, true)
                 else
                     ana
                 end
-                a = solve(ana, a, ctx_flag + :lhs + :arg)
+                a = solve(ana, a, ctx_flag + :lhs)
                 b = solve(ana, b, CtxFlag())
                 func = Expr(hd, a, b)
                 is_fn ? ScopedFunc(ana.solved, func) : func
@@ -276,7 +292,7 @@ function solve(ana, ex, ctx_flag::CtxFlag = CtxFlag())
             end
         Expr(:local, args...) =>
             @quick_lambda  begin
-                args = map(solve(ana, _, ctx_flag + :arg), args)
+                args = map(solve(ana, _, ctx_flag + :local), args)
                 Expr(:local, args...)
             end
         Expr(:global, args...) =>
@@ -347,8 +363,15 @@ function solve(ana, ex, ctx_flag::CtxFlag = CtxFlag())
                 args = map(solve(ana, _, ctx_flag), args)
                 Expr(hd, args...)
             end
-        a => a
     end
+end
+
+function solve(ana, ex, ctx_flag::CtxFlag)
+    ex
+end
+
+function solve(ana, ex)
+    solve(ana, ex, CtxFlag())
 end
 
 function solve(ex)

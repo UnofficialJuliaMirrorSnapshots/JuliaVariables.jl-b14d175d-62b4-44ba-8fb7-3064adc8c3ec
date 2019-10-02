@@ -55,7 +55,7 @@ JuliaVariables.@quick_lambda begin
     # Write your own tests here.
 
     a = solve(:(function k(x::T) where T
-                  :(1, T)
+                (1, T)
               end
     ))
     @test haskey(a.scope.bounds, :T)
@@ -93,6 +93,17 @@ JuliaVariables.@quick_lambda begin
     println(func |> rmlines)
     @test haskey(func.scope.bounds, :z)
     @test func.scope.bounds[:z].is_mutable.x
+
+
+    func = solve(macroexpand(@__MODULE__, :(@inline function (x)
+              z = x + 1
+              @inline function (y)
+                  z += 1
+                  z
+              end
+          end)))
+    println(func |> rmlines)
+
 
 end
 end
